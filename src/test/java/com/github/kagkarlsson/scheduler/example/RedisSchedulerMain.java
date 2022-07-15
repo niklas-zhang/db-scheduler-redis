@@ -49,12 +49,15 @@ public class RedisSchedulerMain {
         Scheduler scheduler = RedisScheduler
                 .create(redisClient, oneTimeTask, customTask)
                 .pollingInterval(Duration.ofSeconds(5))
+                .threads(5)
                 .build();
 
-        scheduler.start();
-
         scheduler.schedule(oneTimeTask.instance("id1", new TaskData("some-data")), Instant.now());
-        scheduler.schedule(customTask.instance("id1", new TaskData("data")), Instant.now());
+        for (int i = 0; i < 10; i++) {
+            scheduler.schedule(customTask.instance("id" + i, new TaskData("data")), Instant.now());
+        }
+
+        scheduler.start();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOG.info("Received shutdown signal.");

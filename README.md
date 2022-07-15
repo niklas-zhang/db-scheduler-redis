@@ -28,4 +28,6 @@ scheduler.start();
 - Table equivalence in Redis.
 - Better way to go through keys.
 - Lock and fetch.
-- ...
+- Make redis client invisible to users.
+- Time complexity of fetch and lock.
+- Multiple scheduler instances tests.

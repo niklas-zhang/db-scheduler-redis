@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public class RedisTaskRepositoryTest {
     private StatefulRedisConnection<String, Object> connection;
 
@@ -44,11 +45,11 @@ public class RedisTaskRepositoryTest {
 
     private Serializer serializer;
 
-    @BeforeEach
+    @BeforeAll
     void init() {
         schedulerName = new SchedulerName.Hostname();
         redisClient = RedisClient.create("redis://localhost:6379");
-        connection = redisClient.connect(new SerializedObjectCodec());
+        connection = RedisConnection.getConnection(redisClient);
         syncCommands = connection.sync();
         oneTimeTask = new OneTimeTask<>("test-1", Void.class) {
             @Override
@@ -268,6 +269,10 @@ public class RedisTaskRepositoryTest {
     @AfterEach
     void end() {
         syncCommands.flushall();
+    }
+
+    @AfterAll
+    void endAll() {
         connection.close();
         redisClient.shutdown();
     }

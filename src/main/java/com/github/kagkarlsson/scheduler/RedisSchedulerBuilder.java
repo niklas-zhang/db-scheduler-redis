@@ -19,9 +19,16 @@ public class RedisSchedulerBuilder extends SchedulerBuilder {
 
     private final RedisClient redisClient;
 
+    protected boolean enableShutdownHook;
+
     public RedisSchedulerBuilder(RedisClient redisClient, List<Task<?>> knownTasks) {
         super(null, knownTasks);
         this.redisClient = redisClient;
+    }
+
+    public RedisSchedulerBuilder enableShutdownHook() {
+        this.enableShutdownHook = true;
+        return this;
     }
 
     @Override
@@ -40,12 +47,13 @@ public class RedisSchedulerBuilder extends SchedulerBuilder {
 
         LOG.info("Creating scheduler with configuration: threads={}, pollInterval={}s, heartbeat={}s enable-immediate-execution={}, table-name={}, name={}", this.executorThreads, this.waiter.getWaitDuration().getSeconds(), this.heartbeatInterval.getSeconds(), this.enableImmediateExecution, this.tableName, this.schedulerName.getName());
         Scheduler scheduler = new RedisScheduler(this.clock, schedulerTaskRepository, clientTaskRepository, taskResolver, this.executorThreads, candidateExecutorService, this.schedulerName, this.waiter, this.heartbeatInterval, this.enableImmediateExecution, this.statsRegistry, this.pollingStrategyConfig, this.deleteUnresolvedAfter, this.shutdownMaxWait, this.logLevel, this.logStackTrace, this.startTasks);
-//        if (this.registerShutdownHook) {
-//            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-//                LOG.info("Received shutdown signal.");
-//                scheduler.stop();
-//            }));
-//        }
+        if (this.enableShutdownHook) {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                LOG.info("Received shutdown signal.");
+                RedisConnection.closeConnection();
+                scheduler.stop();
+            }));
+        }
 
         return scheduler;
     }

@@ -329,22 +329,11 @@ public class RedisTaskRepository implements TaskRepository {
     }
 
     private <T> T withConnection(Function<RedisCommands<String, Object>, T> doWithConnection) {
-        StatefulRedisConnection<String, Object> connection = null;
-        try {
-            LOG.debug("Trying to connect Redis.");
-            connection = client.connect(new SerializedObjectCodec());
-        } catch (RedisException e) {
-            LOG.error("Error when connecting to Redis.");
-            throw new RedisException("Unable to connect to Redis.");
-        }
+        StatefulRedisConnection<String, Object> connection = RedisConnection.getConnection(client);
 
         T res;
-        try {
-            RedisCommands<String, Object> syncCommands = connection.sync();
-            res = doWithConnection.apply(syncCommands);
-        } finally {
-            connection.close();
-        }
+        RedisCommands<String, Object> syncCommands = connection.sync();
+        res = doWithConnection.apply(syncCommands);
         return res;
     }
 
