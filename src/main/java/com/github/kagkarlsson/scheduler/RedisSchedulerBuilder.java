@@ -38,8 +38,8 @@ public class RedisSchedulerBuilder extends SchedulerBuilder {
         }
 
         TaskResolver taskResolver = new TaskResolver(this.statsRegistry, this.clock, this.knownTasks);
-        RedisTaskRepository schedulerTaskRepository = new RedisTaskRepository(redisClient, taskResolver, this.schedulerName, serializer);
-        RedisTaskRepository clientTaskRepository = new RedisTaskRepository(redisClient, taskResolver, this.schedulerName, serializer);
+        RedisTaskRepository schedulerTaskRepository = new RedisTaskRepository(redisClient, taskResolver, this.schedulerName, serializer, tableName);
+        RedisTaskRepository clientTaskRepository = new RedisTaskRepository(redisClient, taskResolver, this.schedulerName, serializer, tableName);
         ExecutorService candidateExecutorService = this.executorService;
         if (candidateExecutorService == null) {
             candidateExecutorService = Executors.newFixedThreadPool(this.executorThreads, ExecutorUtils.defaultThreadFactoryWithPrefix("db-scheduler-"));

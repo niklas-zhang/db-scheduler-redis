@@ -6,6 +6,8 @@ import com.github.kagkarlsson.scheduler.task.Execution;
 import com.github.kagkarlsson.scheduler.task.SchedulableInstance;
 import com.github.kagkarlsson.scheduler.task.Task;
 import com.github.kagkarlsson.scheduler.task.TaskInstance;
+import io.lettuce.core.Limit;
+import io.lettuce.core.Range;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisException;
 import io.lettuce.core.api.StatefulRedisConnection;
@@ -31,12 +33,17 @@ public class RedisTaskRepository implements TaskRepository {
 
     private final SchedulerName schedulerName;
 
+    private final String tableName;
+
+    private final static String TIME_INDEX_KEY = "exectime.index";
+
     // TODO: generalized redis client?
-    public RedisTaskRepository(RedisClient client, TaskResolver taskResolver, SchedulerName schedulerName, Serializer serializer) {
+    public RedisTaskRepository(RedisClient client, TaskResolver taskResolver, SchedulerName schedulerName, Serializer serializer, String tableName) {
         this.client = client;
         this.serializer = serializer;
         this.taskResolver = taskResolver;
         this.schedulerName = schedulerName;
+        this.tableName = tableName;
     }
 
     @Override
@@ -48,7 +55,9 @@ public class RedisTaskRepository implements TaskRepository {
                 return false;
             }
             // TODO: better execution storage pattern?
-            String res = c.hmset(taskInstance.getTaskName() + ":" + taskInstance.getId(), RedisExecutionUtils.newExecution(schedulableInstance.getNextExecutionTime(Instant.now()), taskInstance.getData()));
+            Instant now = Instant.now();
+            String res = c.hmset(RedisExecutionUtils.buildRedisKey(taskInstance.getTaskName(), taskInstance.getId()), RedisExecutionUtils.newExecution(schedulableInstance.getNextExecutionTime(now), taskInstance.getData()));
+            c.zadd(TIME_INDEX_KEY, schedulableInstance.getNextExecutionTime(now).toEpochMilli(), RedisExecutionUtils.buildRedisKey(taskInstance.getTaskName(), taskInstance.getId()));
             return "OK".equals(res);
         });
     }
@@ -60,7 +69,9 @@ public class RedisTaskRepository implements TaskRepository {
         withConnection((c) -> {
             Set<String> taskNamesNotInUse = unresolvedTasks.stream().map(t -> t.getTaskName() + ":").collect(Collectors.toSet());
             // TODO: better way to realize select where taskName not in (....) in Redis?
-            c.keys("*").forEach(k -> {
+            List<Object> dueKeys = c.zrangebyscore(TIME_INDEX_KEY, Range.create(0, now.toEpochMilli()), Limit.from(limit));
+            dueKeys.forEach(rawK -> {
+                String k = (String) rawK;
                 String[] nameId = k.split(":");
                 if (taskNamesNotInUse.contains(nameId[0] + ":")) {
                     return;
@@ -69,13 +80,13 @@ public class RedisTaskRepository implements TaskRepository {
                 task.ifPresentOrElse(t -> {
                     boolean picked = (boolean) c.hget(k, "picked");
                     Instant execTime = (Instant) c.hget(k, "executionTime");
-                    if (picked || execTime.isAfter(now)) {
+                    if (picked) {
                         return;
                     }
 
                     Supplier dataSupplier = memoize(() -> task.get().getDataClass().cast(c.get("data")));
                     Execution e = new Execution((Instant) c.hget(k, "executionTime"), new TaskInstance(nameId[0], nameId[1], dataSupplier), picked, (String) c.hget(k, "pickedBy"), (Instant) c.hget(k, "lastSuccess"), (Instant) c.hget(k, "lastFailure"), (int) c.hget(k, "consecutiveFailures"), (Instant) c.hget(k, "lastHeartbeat"), (long) c.hget(k, "version"));
-                    // TODO: limit
+
                     dueExecutions.add(e);
                 }, () -> {
                     LOG.warn("Failed to find implementation for task with name '{}'. Execution will be excluded from due. Either delete the execution from the database, or add an implementation for it. The scheduler may be configured to automatically delete unresolved tasks after a certain period of time.", nameId[0]);
@@ -84,8 +95,9 @@ public class RedisTaskRepository implements TaskRepository {
             });
             return true;
         });
-        dueExecutions.sort(Comparator.comparing(o -> o.executionTime));
-        return dueExecutions.subList(0, Math.min(limit, dueExecutions.size()));
+        //dueExecutions.sort(Comparator.comparing(o -> o.executionTime));
+        //return dueExecutions.subList(0, Math.min(limit, dueExecutions.size()));
+        return dueExecutions;
     }
 
     @Override
@@ -96,6 +108,9 @@ public class RedisTaskRepository implements TaskRepository {
             Set<String> taskNamesNotInUse = unresolvedTasks.stream().map(t -> t.getTaskName() + ":").collect(Collectors.toSet());
             // TODO: better way to realize select where taskName not in (....) in Redis?
             c.keys("*").forEach(k -> {
+                if (TIME_INDEX_KEY.equals(k)) {
+                    return;
+                }
                 String[] nameId = k.split(":");
                 if (taskNamesNotInUse.contains(nameId[0] + ":")) {
                     return;
@@ -160,7 +175,9 @@ public class RedisTaskRepository implements TaskRepository {
     @Override
     public void remove(Execution execution) {
         long removed = withConnection((c) -> {
-            return c.del(RedisExecutionUtils.buildRedisKey(execution.taskInstance.getTaskName(), execution.taskInstance.getId()));
+            String key = RedisExecutionUtils.buildRedisKey(execution.taskInstance.getTaskName(), execution.taskInstance.getId());
+            c.zrem(TIME_INDEX_KEY, key);
+            return c.del(key);
         });
 
         if (removed <= 0) {
@@ -194,6 +211,7 @@ public class RedisTaskRepository implements TaskRepository {
             long curVersion = (long) c.hget(redisKey, "version");
             toUpdate.put("version", curVersion + 1);
             c.hset(redisKey, toUpdate);
+            c.zadd(TIME_INDEX_KEY, nextExecutionTime.toEpochMilli(), redisKey);
             return true;
         });
         // TODO: decide success?
@@ -242,6 +260,9 @@ public class RedisTaskRepository implements TaskRepository {
         List<Execution> executions = new ArrayList<>();
         return withConnection((c) -> {
             c.keys("*").forEach(k -> {
+                if (TIME_INDEX_KEY.equals(k)) {
+                    return;
+                }
                 String[] nameId = k.split(":");
                 if (taskNamesNotInUse.contains(nameId[0] + ":")) {
                     return;
@@ -278,6 +299,9 @@ public class RedisTaskRepository implements TaskRepository {
         List<Execution> executions = new ArrayList<>();
         return withConnection((c) -> {
             c.keys("*").forEach(k -> {
+                if (TIME_INDEX_KEY.equals(k)) {
+                    return;
+                }
                 String[] nameId = k.split(":");
                 if (taskNamesNotInUse.contains(nameId[0] + ":")) {
                     return;
@@ -319,6 +343,7 @@ public class RedisTaskRepository implements TaskRepository {
     public int removeExecutions(String taskName) {
         return withConnection((c) -> {
             List<String> keys = c.keys(taskName + ":*");
+            c.zrem(TIME_INDEX_KEY, keys.toArray(new String[1]));
             return c.del(keys.toArray(new String[1])).intValue();
         });
     }
@@ -326,6 +351,10 @@ public class RedisTaskRepository implements TaskRepository {
     @Override
     public void checkSupportsLockAndFetch() {
         throw new IllegalArgumentException("Database using Redis does not support lock-and-fetch polling (i.e. Select-for-update)");
+    }
+
+    private void forEachInstance() {
+
     }
 
     private <T> T withConnection(Function<RedisCommands<String, Object>, T> doWithConnection) {

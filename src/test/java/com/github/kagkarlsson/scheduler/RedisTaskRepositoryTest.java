@@ -45,6 +45,8 @@ public class RedisTaskRepositoryTest {
 
     private Serializer serializer;
 
+    private final static String TIME_INDEX_KEY = "exectime.index";
+
     @BeforeAll
     void init() {
         schedulerName = new SchedulerName.Hostname();
@@ -71,7 +73,7 @@ public class RedisTaskRepositoryTest {
         }};
         serializer = Serializer.DEFAULT_JAVA_SERIALIZER;
         TaskResolver taskResolver = new TaskResolver(new StatsRegistry.DefaultStatsRegistry(), knownTasks);
-        taskRepository = new RedisTaskRepository(redisClient, taskResolver, schedulerName, serializer);
+        taskRepository = new RedisTaskRepository(redisClient, taskResolver, schedulerName, serializer, "scheduled_tasks");
     }
 
     @Test
@@ -84,11 +86,12 @@ public class RedisTaskRepositoryTest {
     @Test
     void shouldCreateNewExecution() {
         Integer data = 10;
-        boolean res = taskRepository.createIfNotExists(new SchedulableTaskInstance(oneTimeTaskWithData.instance("1", 10), Instant.now()));
+        boolean res = taskRepository.createIfNotExists(new SchedulableTaskInstance(oneTimeTaskWithData.instance("1", 10), now));
         Assertions.assertTrue(res);
         Map<String, Object> execution = syncCommands.hgetall(RedisExecutionUtils.buildRedisKey(oneTimeTaskWithData.getName(), "1"));
         Assertions.assertFalse(execution.isEmpty());
         assert data.equals(execution.get("data"));
+        Assertions.assertEquals(now.toEpochMilli(), syncCommands.zscore(TIME_INDEX_KEY, RedisExecutionUtils.buildRedisKey(oneTimeTaskWithData.getName(), "1")).longValue());
     }
 
     @Test
@@ -136,11 +139,11 @@ public class RedisTaskRepositoryTest {
 
     @Test
     void shouldGetDueExecutions() {
-        taskRepository.createIfNotExists(TestUtils.newSchedulableInstance("test-1", "1", 5));
-        taskRepository.createIfNotExists(TestUtils.newSchedulableInstance("test-1", "2", 1));
-        taskRepository.createIfNotExists(TestUtils.newSchedulableInstance("test-2", "1", 0));
+        taskRepository.createIfNotExists(new SchedulableTaskInstance(oneTimeTask.instance("1"), now.plusSeconds(5)));
+        taskRepository.createIfNotExists(new SchedulableTaskInstance(oneTimeTask.instance("2"), now.plusSeconds(1)));
+        taskRepository.createIfNotExists(new SchedulableTaskInstance(oneTimeTaskWithData.instance("1", 10), now));
         taskRepository.createIfNotExists(TestUtils.newSchedulableInstance("test-4", "1", 0));
-        List<String> executions = taskRepository.getDue(Instant.now().plusSeconds(1), 10).stream().map(e -> e.taskInstance.getTaskName() + ":" + e.taskInstance.getId()).collect(Collectors.toList());
+        List<String> executions = taskRepository.getDue(now.plusSeconds(1), 10).stream().map(e -> e.taskInstance.getTaskName() + ":" + e.taskInstance.getId()).collect(Collectors.toList());
         assertThat(executions, equalTo(new ArrayList<>(){{add("test-2:1"); add("test-1:2");}}));
         executions = taskRepository.getDue(Instant.now().plusSeconds(1), 1).stream().map(e -> e.taskInstance.getTaskName() + ":" + e.taskInstance.getId()).collect(Collectors.toList());
         assertThat(executions, equalTo(new ArrayList<>(){{add("test-2:1");}}));
@@ -155,6 +158,7 @@ public class RedisTaskRepositoryTest {
         Execution newE = taskRepository.getExecution(oneTimeTaskWithData.getName(), "1").get();
         Assertions.assertEquals(nextExecutionTime, newE.executionTime);
         Assertions.assertEquals(1, newE.taskInstance.getData());
+        Assertions.assertEquals((double) nextExecutionTime.toEpochMilli(), syncCommands.zscore(TIME_INDEX_KEY, RedisExecutionUtils.buildRedisKey(newE.taskInstance.getTaskName(), newE.taskInstance.getId())));
     }
 
     @Test
@@ -188,6 +192,7 @@ public class RedisTaskRepositoryTest {
         taskRepository.remove(execution);
         Optional<Execution> executionOptional = taskRepository.getExecution("test-1", "1");
         assert executionOptional.isEmpty();
+        Assertions.assertNull(syncCommands.zrank(TIME_INDEX_KEY, RedisExecutionUtils.buildRedisKey(execution.taskInstance.getTaskName(), execution.taskInstance.getId())));
         Assert.assertThrows(ExecutionException.class, () -> {
             taskRepository.remove(execution);
         });
